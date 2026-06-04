@@ -5,14 +5,37 @@ const CACHE_TTL_MS = 60_000
 let cachedAt = 0
 let cachedFAQText = ""
 
-function parseCSVLine(line: string): string[] {
-  const cells: string[] = []
+function normalizeSheetURL(sheetUrl: string): string {
+  const trimmedUrl = sheetUrl.trim()
+  const url = new URL(trimmedUrl)
+
+  if (url.hostname !== "docs.google.com") {
+    return trimmedUrl
+  }
+
+  const sheetId = url.pathname.match(/\/spreadsheets\/d\/([^/]+)/)?.[1]
+  if (!sheetId) {
+    return trimmedUrl
+  }
+
+  if (url.pathname.includes("/export") || url.searchParams.get("output") === "csv") {
+    return trimmedUrl
+  }
+
+  const gid = url.searchParams.get("gid") ?? "0"
+  return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`
+}
+
+function parseCSV(csv: string): FAQItem[] {
+  const rows: string[][] = []
+  let row: string[] = []
   let current = ""
   let inQuotes = false
+  const normalized = csv.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n")
 
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i]
-    const next = line[i + 1]
+  for (let i = 0; i < normalized.length; i += 1) {
+    const char = normalized[i]
+    const next = normalized[i + 1]
 
     if (char === '"' && inQuotes && next === '"') {
       current += '"'
@@ -26,7 +49,17 @@ function parseCSVLine(line: string): string[] {
     }
 
     if (char === "," && !inQuotes) {
-      cells.push(current.trim())
+      row.push(current.trim())
+      current = ""
+      continue
+    }
+
+    if (char === "\n" && !inQuotes) {
+      row.push(current.trim())
+      if (row.some(Boolean)) {
+        rows.push(row)
+      }
+      row = []
       current = ""
       continue
     }
@@ -34,28 +67,22 @@ function parseCSVLine(line: string): string[] {
     current += char
   }
 
-  cells.push(current.trim())
-  return cells
-}
+  row.push(current.trim())
+  if (row.some(Boolean)) {
+    rows.push(row)
+  }
 
-function parseCSV(csv: string): FAQItem[] {
-  const normalized = csv.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-  const rows = normalized
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map(parseCSVLine)
-
-  const [header, ...dataRows] = rows
+  const [rawHeader, ...dataRows] = rows
+  const header = rawHeader?.map((cell) => cell.trim().toLowerCase())
   if (!header) {
     return []
   }
 
-  const questionIndex = header.findIndex((cell) => cell.toLowerCase() === "question")
-  const answerIndex = header.findIndex((cell) => cell.toLowerCase() === "answer")
+  const questionIndex = header.findIndex((cell) => cell === "question")
+  const answerIndex = header.findIndex((cell) => cell === "answer")
 
   if (questionIndex === -1 || answerIndex === -1) {
-    throw new Error("FAQ CSV must include question and answer headers")
+    throw new Error(`FAQ CSV must include question and answer headers. Found: ${header.join(", ")}`)
   }
 
   return dataRows
@@ -85,7 +112,9 @@ export async function getFAQText(): Promise<string> {
     throw new Error("SHEET_CSV_URL is not configured")
   }
 
-  const response = await fetch(sheetUrl, {
+  const normalizedSheetUrl = normalizeSheetURL(sheetUrl)
+
+  const response = await fetch(normalizedSheetUrl, {
     headers: {
       Accept: "text/csv,text/plain,*/*",
     },
@@ -93,10 +122,14 @@ export async function getFAQText(): Promise<string> {
   })
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch FAQ sheet: ${response.status}`)
+    throw new Error(`Failed to fetch FAQ sheet: ${response.status} ${response.statusText}`)
   }
 
   const csv = await response.text()
+  if (/^\s*</.test(csv)) {
+    throw new Error("SHEET_CSV_URL returned HTML, not CSV. Check that the sheet is public or use a CSV export URL.")
+  }
+
   const faqItems = parseCSV(csv)
   cachedFAQText = formatFAQ(faqItems)
   cachedAt = now
