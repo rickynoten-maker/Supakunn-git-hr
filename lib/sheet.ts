@@ -78,11 +78,13 @@ function parseCSV(csv: string): FAQItem[] {
     return []
   }
 
-  const questionIndex = header.findIndex((cell) => cell === "question")
-  const answerIndex = header.findIndex((cell) => cell === "answer")
+  const questionIndex = header.findIndex((cell) => ["question", "คำถาม"].includes(cell))
+  const answerIndex = header.findIndex((cell) => ["answer", "คำตอบ"].includes(cell))
 
   if (questionIndex === -1 || answerIndex === -1) {
-    throw new Error(`FAQ CSV must include question and answer headers. Found: ${header.join(", ")}`)
+    throw new Error(
+      `FAQ CSV must include question/answer or คำถาม/คำตอบ headers. Found: ${header.join(", ")}`,
+    )
   }
 
   return dataRows
