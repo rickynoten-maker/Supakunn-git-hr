@@ -3,7 +3,7 @@ import { messagingApi, validateSignature, type WebhookEvent } from "@line/bot-sd
 
 import { askGemini, DEFAULT_REPLY } from "@/lib/gemini"
 import { buildSystemPrompt } from "@/lib/prompt"
-import { getFAQText } from "@/lib/sheet"
+import { findDirectFAQAnswer, getFAQData } from "@/lib/sheet"
 
 const SHEET_ERROR_REPLY =
   "ขออภัยค่ะ ระบบข้อมูล HR กำลังมีปัญหาชั่วคราว กรุณาติดต่อฝ่าย HR โดยตรงค่ะ"
@@ -57,17 +57,23 @@ async function handleEvent(event: WebhookEvent): Promise<void> {
     return
   }
 
-  let faqText: string
+  let faqData: Awaited<ReturnType<typeof getFAQData>>
   try {
-    faqText = await getFAQText()
+    faqData = await getFAQData()
   } catch (err) {
     console.error("sheet_error", err)
     await replyText(event.replyToken, SHEET_ERROR_REPLY)
     return
   }
 
+  const directFAQAnswer = findDirectFAQAnswer(faqData.items, userMessage)
+  if (directFAQAnswer) {
+    await replyText(event.replyToken, directFAQAnswer)
+    return
+  }
+
   try {
-    const prompt = buildSystemPrompt(faqText, userMessage)
+    const prompt = buildSystemPrompt(faqData.text, userMessage)
     const geminiResponse = await askGemini(prompt)
     await replyText(event.replyToken, geminiResponse.text || DEFAULT_REPLY)
   } catch (err) {

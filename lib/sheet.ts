@@ -1,9 +1,11 @@
 import type { FAQItem } from "@/types/faq"
 
 const CACHE_TTL_MS = 60_000
+const THAI_QUESTION_HEADER = "\u0e04\u0e33\u0e16\u0e32\u0e21"
+const THAI_ANSWER_HEADER = "\u0e04\u0e33\u0e15\u0e2d\u0e1a"
 
 let cachedAt = 0
-let cachedFAQText = ""
+let cachedFAQData: { items: FAQItem[]; text: string } | null = null
 
 function normalizeSheetURL(sheetUrl: string): string {
   const trimmedUrl = sheetUrl.trim()
@@ -37,13 +39,13 @@ function parseCSV(csv: string): FAQItem[] {
     const char = normalized[i]
     const next = normalized[i + 1]
 
-    if (char === '"' && inQuotes && next === '"') {
-      current += '"'
+    if (char === "\"" && inQuotes && next === "\"") {
+      current += "\""
       i += 1
       continue
     }
 
-    if (char === '"') {
+    if (char === "\"") {
       inQuotes = !inQuotes
       continue
     }
@@ -78,13 +80,11 @@ function parseCSV(csv: string): FAQItem[] {
     return []
   }
 
-  const questionIndex = header.findIndex((cell) => ["question", "คำถาม"].includes(cell))
-  const answerIndex = header.findIndex((cell) => ["answer", "คำตอบ"].includes(cell))
+  const questionIndex = header.findIndex((cell) => ["question", THAI_QUESTION_HEADER].includes(cell))
+  const answerIndex = header.findIndex((cell) => ["answer", THAI_ANSWER_HEADER].includes(cell))
 
   if (questionIndex === -1 || answerIndex === -1) {
-    throw new Error(
-      `FAQ CSV must include question/answer or คำถาม/คำตอบ headers. Found: ${header.join(", ")}`,
-    )
+    throw new Error(`FAQ CSV must include question/answer or Thai question/answer headers. Found: ${header.join(", ")}`)
   }
 
   return dataRows
@@ -97,16 +97,52 @@ function parseCSV(csv: string): FAQItem[] {
 
 function formatFAQ(items: FAQItem[]): string {
   if (items.length === 0) {
-    return "ไม่มีข้อมูล FAQ ในระบบ"
+    return "No FAQ data in system"
   }
 
-  return items.map((item) => `คำถาม: ${item.question}\nคำตอบ: ${item.answer}`).join("\n\n")
+  return items.map((item) => `${THAI_QUESTION_HEADER}: ${item.question}\n${THAI_ANSWER_HEADER}: ${item.answer}`).join("\n\n")
 }
 
-export async function getFAQText(): Promise<string> {
+function normalizeFAQQuestion(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("th-TH")
+    .replace(/[\s"'`“”‘’.,!?…:;()[\]{}<>/\\|_-]+/g, "")
+}
+
+export function findDirectFAQAnswer(items: FAQItem[], userMessage: string): string | null {
+  const normalizedUserMessage = normalizeFAQQuestion(userMessage)
+  if (!normalizedUserMessage) {
+    return null
+  }
+
+  const exactMatch = items.find((item) => normalizeFAQQuestion(item.question) === normalizedUserMessage)
+  if (exactMatch) {
+    console.log("faq_direct_match", { type: "exact" })
+    return exactMatch.answer
+  }
+
+  const partialMatch = items.find((item) => {
+    const normalizedQuestion = normalizeFAQQuestion(item.question)
+    return (
+      normalizedUserMessage.length >= 4 &&
+      normalizedQuestion.length >= 4 &&
+      (normalizedUserMessage.includes(normalizedQuestion) || normalizedQuestion.includes(normalizedUserMessage))
+    )
+  })
+
+  if (partialMatch) {
+    console.log("faq_direct_match", { type: "partial" })
+    return partialMatch.answer
+  }
+
+  return null
+}
+
+export async function getFAQData(): Promise<{ items: FAQItem[]; text: string }> {
   const now = Date.now()
-  if (cachedFAQText && now - cachedAt < CACHE_TTL_MS) {
-    return cachedFAQText
+  if (cachedFAQData && now - cachedAt < CACHE_TTL_MS) {
+    return cachedFAQData
   }
 
   const sheetUrl = process.env.SHEET_CSV_URL
@@ -133,8 +169,16 @@ export async function getFAQText(): Promise<string> {
   }
 
   const faqItems = parseCSV(csv)
-  cachedFAQText = formatFAQ(faqItems)
+  cachedFAQData = {
+    items: faqItems,
+    text: formatFAQ(faqItems),
+  }
   cachedAt = now
 
-  return cachedFAQText
+  return cachedFAQData
+}
+
+export async function getFAQText(): Promise<string> {
+  const faqData = await getFAQData()
+  return faqData.text
 }
